@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from transformers import pipeline
 import open3d as o3d
 from kornia.geometry import depth_to_3d, depth_to_normals
-from skimage.segmentation import felzenszwalb, quickshift 
+from skimage.segmentation import felzenszwalb, quickshift, slic
 from skimage.segmentation import mark_boundaries
 from PIL import Image
 from scipy.stats import mode
@@ -32,10 +32,18 @@ def getMonoDepthModel():
     return model
 
 
-def writePCD(depth, rgb_image, fname):
+def writePCD(depth, rgb_image, fname = None):
+
+    # point grey camera
     cam_mtx = np.array([[       1553.9663302771853,      0.0,       339.47357153102087    ],
                         [      0.0,      1556.191376668082,      288.44960314558057    ],
-                        [      0.0,       0.0,       1.0    ]  ])
+                        [      0.0,       0.0,       1.0    ]  ]) 
+
+    # realsense
+    # cam_mtx = np.array([[       605.84136963,      0.0,       314.27282715    ],
+    #                     [      0.0,      605.50720215,      254.17677307   ],
+    #                     [      0.0,       0.0,       1.0    ]  ]) 
+
     points = depth_to_3d (torch.from_numpy(depth[None, None, ...]),camera_matrix= torch.from_numpy(cam_mtx[ None, ...]),normalize_points= False).squeeze()
     x, y, z = points[0,...].flatten(), points[1,...].flatten(), points[2,...].flatten()
     normals = depth_to_normals( depth = torch.from_numpy(depth[None, None, ...]),camera_matrix= torch.from_numpy(cam_mtx[ None, ...])).squeeze()
@@ -44,13 +52,15 @@ def writePCD(depth, rgb_image, fname):
     # plt.imsave('./normals.png', (normals.permute(1,2,0).cpu().numpy()+1)/2)
     rgb_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2RGB)/255.0
     r,g,b = rgb_image[...,0].flatten(), rgb_image[...,1].flatten(), rgb_image[...,2].flatten()
-    pcd = o3d.geometry.PointCloud()
-    pts = torch.stack([x,y,z], dim=0).detach().cpu().numpy()
-    normals = torch.stack([nx,ny,nz], dim=0).detach().cpu().numpy()
-    pcd.points = o3d.utility.Vector3dVector(pts.T)
-    pcd.normals = o3d.utility.Vector3dVector(normals.T)
-    pcd.colors = o3d.utility.Vector3dVector(np.vstack([r,g,b]).T)
-    o3d.io.write_point_cloud('./'+fname+'.ply', pcd)
+    if fname:
+        pcd = o3d.geometry.PointCloud()
+        pts = torch.stack([x,y,z], dim=0).detach().cpu().numpy()
+        normals = torch.stack([nx,ny,nz], dim=0).detach().cpu().numpy()
+        pcd.points = o3d.utility.Vector3dVector(pts.T)
+        pcd.normals = o3d.utility.Vector3dVector(normals.T)
+        pcd.colors = o3d.utility.Vector3dVector(np.vstack([r,g,b]).T)
+        o3d.io.write_point_cloud('./'+fname+'.ply', pcd)
+
     return {'points':points, 'normals': normals, 'rgb' : rgb_image}
 
 
@@ -176,14 +186,14 @@ def show_masks_on_image(raw_image, masks):
 #     import glob
 #     fnames = glob.glob(dir)
 
-def RANSAC_align_camera_centers(colmap_camera_centers, robot_cam_centers, max_iter = 2500, min_point_err = 2.5):
+def RANSAC_align_camera_centers(colmap_camera_centers, robot_cam_centers, max_iter = 2500, min_point_err = 0.5):
     num_images, dim = colmap_camera_centers.shape[0], colmap_camera_centers.shape[1]
     best_align_t_R = None
     best_align_t_T = None
     best_align_t_s = None
     best_err = 1e9
     max_inliers = 4
-    pdb.set_trace()
+    # pdb.set_trace()
     # for it_ in tqdm(range(max_iter), desc=f'Curr error = {best_err}'):
     for it_ in  tqdm(range(max_iter), desc=f'error {best_err}'):
         # confirmed_inliers = []
@@ -210,6 +220,7 @@ def RANSAC_align_camera_centers(colmap_camera_centers, robot_cam_centers, max_it
             per_point_error_confirmed = torch.linalg.norm(confirmed_inliers_colmap_aligned - confirmed_inliers_robot, dim = -1).flatten().sum()
 
             if (per_point_error_confirmed < best_err) or (len(confirmed_inliers) > max_inliers):
+                max_inliers = confirmed_inliers.shape[0]
                 print(f'per_point_error {per_point_error_confirmed} << best error {best_err}, # inliers: {len(confirmed_inliers)} ')
                 best_err = per_point_error_confirmed
                 best_align_t_R = confirmed_model[0]
@@ -234,8 +245,12 @@ if __name__ == "__main__":
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_0.png',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_1.png',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_2.png']
-    image_fnames = ['/home/atkesonlab/multLightWorkspace/data/reflective_1/images/left_6.png',\
-                     '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_6.png']
+
+    image_fnames = ['/home/atkesonlab/multLightWorkspace/data/trash/images/left_0.png',\
+                     '/home/atkesonlab/multLightWorkspace/data/trash/images/right_0.png']
+
+    # image_fnames = ['./rs_1.png',\
+    #                  './rs_2.png']
     
     # depth_fnames = ['/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/left_0_depth.npy',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/left_1_depth.npy',\
@@ -244,8 +259,8 @@ if __name__ == "__main__":
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/right_1_depth.npy',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/right_2_depth.npy']
 
-    depth_fnames = ['/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/left_6_depth.npy',\
-                    '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/right_6_depth.npy']
+    depth_fnames = ['/home/atkesonlab/multLightWorkspace/data/trash/depths/left_0_depth.npy',\
+                    '/home/atkesonlab/multLightWorkspace/data/trash/depths/right_0_depth.npy']
 
     scaled_PCDs = []
     for i, (image_fname, depth_fname) in enumerate(zip(image_fnames, depth_fnames)):
@@ -255,32 +270,35 @@ if __name__ == "__main__":
 
  
 
-        # # conventional segmentation
-        segments = quickshift(raw_img, kernel_size=11, max_dist=6, ratio=0.5)
-        # plt.imshow(mark_boundaries(raw_img, segments))
-        # plt.show()
-        metric_depth = np.load(depth_fname)
-
+        ## conventional segmentation
+        # segments = quickshift(raw_img, kernel_size=21, max_dist=6, ratio=0.5)
+        segments = slic(raw_img, n_segments = 100, compactness = 20, sigma = 0)
+        plt.imshow(mark_boundaries(raw_img, segments))
+        plt.show()
+        metric_depth = np.load(depth_fname) #* 0.001
         input = torch.tensor(metric_depth[None,None,...])
         output = blur(blur(blur(blur(blur(input)))))
-        metric_depth = output.cpu().numpy().squeeze()
-
+        metric_depth = input.cpu().numpy().squeeze()
         pred_depth_upgraded = conventionalSegmentation(pred_depth, metric_depth, segments)
         out = writePCD(pred_depth_upgraded, raw_img, str(i))
         scaled_PCDs.append(out)
-        # writePCD(metric_depth, raw_img, 'metric_depth')
-        # writePCD(pred_depth, raw_img, 'raw_preds')
+        _ = writePCD(metric_depth, raw_img, 'metric_depth')
+        writePCD(pred_depth, raw_img, 'raw_preds')
         # exit()
 
-
-    # generator = pipeline("mask-generation", model="facebook/sam-vit-huge", device=0)
-    # raw_img_PIL = Image.open(image_fname).convert("RGB")
-    # outputs = generator(raw_img_PIL, points_per_batch=1)
-    # masks = outputs["masks"]
-    # scores = outputs["scores"]
-    # show_masks_on_image(raw_img, masks)
-    # pred_depth_upgraded_sam = SAMSegmentation(pred_depth, metric_depth, masks)
-    # writePCD(pred_depth_upgraded_sam, raw_img, 'pred_depth_upgraded_SAM')
+        ## SAM segmentation
+        # generator = pipeline("mask-generation", model="facebook/sam-vit-huge", device=0)
+        # raw_img_PIL = Image.open(image_fname).convert("RGB")
+        # outputs = generator(raw_img_PIL, points_per_batch=1)
+        # masks = outputs["masks"]
+        # scores = outputs["scores"]
+        # show_masks_on_image(raw_img, masks)
+        # metric_depth = np.load(depth_fname) 
+        # pred_depth_upgraded_sam = SAMSegmentation(pred_depth, metric_depth, masks)
+        # # writePCD(pred_depth_upgraded_sam, raw_img, 'pred_depth_upgraded_SAM')
+        # out = writePCD(pred_depth_upgraded_sam, raw_img, str(i))
+        # scaled_PCDs.append(out)
+        # exit()
 
     img_tmp = cv2.imread(image_fnames[0],0)/255.0
     img_1 = cv2.imread(image_fnames[1],0)/255.0
@@ -295,11 +313,11 @@ if __name__ == "__main__":
     img = np.hstack([img_tmp, img_1])
     plt.imshow(img, cmap = 'gray')
     for i in range(kp1.shape[0]):
-        tmp_x = kp1[i,0].numpy()
-        tmp_y = kp1[i,1].numpy()
+        tmp_x = kp1[i,1].numpy()
+        tmp_y = kp1[i,0].numpy()
 
-        img_x = kp2[i,0] + 768
-        img_y = kp2[i,1]
+        img_x = kp2[i,1] + 768
+        img_y = kp2[i,0]
         plt.plot([tmp_x, img_x], [tmp_y, img_y])
     
     plt.show()
@@ -309,9 +327,9 @@ if __name__ == "__main__":
     confidence = out['confidence']>0.5
     kp_tmp = (kp1[confidence,:]).int()
     kp_dst = (kp2[confidence,:]).int()
-
-    pcd_src_corresp = pcd_src[:,kp_tmp[:,0], kp_tmp[:,1]]
-    pcd_dst_corresp = pcd_dst[:,kp_dst[:,0], kp_dst[:,1]]
+    # pdb.set_trace()
+    pcd_src_corresp = pcd_src[:,kp_tmp[:,1], kp_tmp[:,0]]
+    pcd_dst_corresp = pcd_dst[:,kp_dst[:,1], kp_dst[:,0]]
 
     align_t_R, align_t_T, align_t_s = RANSAC_align_camera_centers(pcd_dst_corresp.T, pcd_src_corresp.T)
     dst_points_reshaped = pcd_dst.permute(1,2,0).reshape(-1,3)
@@ -323,7 +341,7 @@ if __name__ == "__main__":
     dst_normals = scaled_PCDs[1]['normals'].T
     # make pcd
     def make_pcd(points, colors, normals, name): 
-        pdb.set_trace()
+        # pdb.set_trace()
         pcd = o3d.geometry.PointCloud()
         pts = points.detach().cpu().numpy()
         normals = normals
