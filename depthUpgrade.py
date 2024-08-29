@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from depth_anything_v2.dpt import DepthAnythingV2
 import matplotlib.pyplot as plt
-from transformers import pipeline
+from transformers import SamModel, SamProcessor
 import open3d as o3d
 from kornia.geometry import depth_to_3d, depth_to_normals
 from skimage.segmentation import felzenszwalb, quickshift, slic
@@ -139,28 +139,29 @@ def SAMSegmentation(predicted_depth, metric_depth, masks):
         mask_t = torch.tensor(mask[None,...], dtype=torch.float32, device='cuda:0', requires_grad=False)
         scale, shift = compute_scale_and_shift(pred_depth_t, true_depth_t, mask_t)
         # out_depth_t = scale.view(-1, 1, 1) * pred_depth_t + shift.view(-1, 1, 1)
-        # out_depth_t += scale.view(-1, 1, 1) * pred_depth_t * mask_t + shift.view(-1, 1, 1)
+        out_depth_t += (scale.view(-1, 1, 1) * pred_depth_t + shift.view(-1, 1, 1)) * mask_t
+        # pdb.set_trace()
         scale_all.append(scale.cpu().numpy())
         shift_all.append(shift.cpu().numpy())
         weights_all.append(mask.sum())
 
-    mode_scale = np.average(np.array(scale_all).squeeze(), weights = np.array(weights_all))
-    mode_shift = np.average(np.array(shift_all).squeeze(), weights = np.array(weights_all))
+    # mode_scale = np.average(np.array(scale_all).squeeze(), weights = np.array(weights_all))
+    # mode_shift = np.average(np.array(shift_all).squeeze(), weights = np.array(weights_all))
     # mode_scale = mode(np.array(scale_all).squeeze())[0] 
     # mode_shift = mode(np.array(shift_all).squeeze())[0] 
-    print(f"mode scele {mode_scale} mode shift {mode_shift}")
-    print(scale_all[-1], shift_all[-1])
-    out_depth = predicted_depth * mode_scale + mode_shift
+    # print(f"mode scele {mode_scale} mode shift {mode_shift}")
+    # print(scale_all[-1], shift_all[-1])
+    # out_depth = predicted_depth * mode_scale + mode_shift
 
-    plt.imshow(out_depth)
+    plt.imshow(out_depth_t.squeeze().cpu().numpy())
     plt.show()
 
-    plt.plot(np.array(scale_all), label = 'scales')
-    # plt.plot(np.array(shift_all), label = 'shifts')
-    plt.legend()
-    plt.show()
+    # plt.plot(np.array(scale_all), label = 'scales')
+    # # plt.plot(np.array(shift_all), label = 'shifts')
+    # plt.legend()
+    # plt.show()
     
-    return out_depth
+    return out_depth_t.squeeze().cpu().numpy()
 
 def show_mask(mask, ax, random_color=False):
     if random_color:
@@ -185,6 +186,29 @@ def show_masks_on_image(raw_image, masks):
 # def registerPCD(dir):
 #     import glob
 #     fnames = glob.glob(dir)
+
+def selectPixels(image):
+    """
+    Function to display an image and allow the user to select points using the mouse.
+    The function returns the selected points when the 'Escape' key is pressed.
+
+    Parameters:
+    - image: A 2D or 3D numpy array representing the image.
+
+    Returns:
+    - points: A list of (x, y) tuples representing the selected points.
+    """
+    plt.imshow(image, cmap='gray')
+    plt.title("Click to select points, press 'Escape' to finish")
+    plt.axis('on')  # Turn on axis labels
+
+    # Allow user to select points
+    points = plt.ginput(n=-1, timeout=0)
+
+    # Close the plot window
+    plt.close()
+
+    return points
 
 def RANSAC_align_camera_centers(colmap_camera_centers, robot_cam_centers, max_iter = 2500, min_point_err = 0.5):
     num_images, dim = colmap_camera_centers.shape[0], colmap_camera_centers.shape[1]
@@ -246,8 +270,8 @@ if __name__ == "__main__":
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_1.png',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/images/right_2.png']
 
-    image_fnames = ['/home/atkesonlab/multLightWorkspace/data/trash/images/left_0.png',\
-                     '/home/atkesonlab/multLightWorkspace/data/trash/images/right_0.png']
+    image_fnames = ['/home/atkesonlab/multLightWorkspace/data/face_2/images_tonemapped/left_0.png',\
+                     '/home/atkesonlab/multLightWorkspace/data/face_2/images_tonemapped/right_0.png']
 
     # image_fnames = ['./rs_1.png',\
     #                  './rs_2.png']
@@ -259,8 +283,12 @@ if __name__ == "__main__":
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/right_1_depth.npy',\
     #                 '/home/atkesonlab/multLightWorkspace/data/reflective_1/depths/right_2_depth.npy']
 
-    depth_fnames = ['/home/atkesonlab/multLightWorkspace/data/trash/depths/left_0_depth.npy',\
-                    '/home/atkesonlab/multLightWorkspace/data/trash/depths/right_0_depth.npy']
+    depth_fnames = ['/home/atkesonlab/multLightWorkspace/data/face_2/depths/left_0_depth.npy',\
+                    '/home/atkesonlab/multLightWorkspace/data/face_2/depths/right_0_depth.npy']
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    SAM_model = SamModel.from_pretrained("facebook/sam-vit-huge").to(device)
+    processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
 
     scaled_PCDs = []
     for i, (image_fname, depth_fname) in enumerate(zip(image_fnames, depth_fnames)):
@@ -272,32 +300,52 @@ if __name__ == "__main__":
 
         ## conventional segmentation
         # segments = quickshift(raw_img, kernel_size=21, max_dist=6, ratio=0.5)
-        segments = slic(raw_img, n_segments = 100, compactness = 20, sigma = 0)
-        plt.imshow(mark_boundaries(raw_img, segments))
-        plt.show()
-        metric_depth = np.load(depth_fname) #* 0.001
-        input = torch.tensor(metric_depth[None,None,...])
-        output = blur(blur(blur(blur(blur(input)))))
-        metric_depth = input.cpu().numpy().squeeze()
-        pred_depth_upgraded = conventionalSegmentation(pred_depth, metric_depth, segments)
-        out = writePCD(pred_depth_upgraded, raw_img, str(i))
-        scaled_PCDs.append(out)
-        _ = writePCD(metric_depth, raw_img, 'metric_depth')
-        writePCD(pred_depth, raw_img, 'raw_preds')
+        # # segments = slic(raw_img, n_segments = 100, compactness = 20, sigma = 0)
+        # plt.imshow(mark_boundaries(raw_img, segments))
+        # plt.show()
+        # metric_depth = np.load(depth_fname) #* 0.001
+        # input = torch.tensor(metric_depth[None,None,...])
+        # input = blur(blur(blur(blur(blur(input)))))
+        # metric_depth = input.cpu().numpy().squeeze()
+        # pred_depth_upgraded = conventionalSegmentation(pred_depth, metric_depth, segments)
+        # out = writePCD(pred_depth_upgraded, raw_img, str(i))
+        # scaled_PCDs.append(out)
+        # _ = writePCD(metric_depth, raw_img, 'metric_depth')
+        # writePCD(pred_depth, raw_img, 'raw_preds')
         # exit()
 
         ## SAM segmentation
-        # generator = pipeline("mask-generation", model="facebook/sam-vit-huge", device=0)
-        # raw_img_PIL = Image.open(image_fname).convert("RGB")
-        # outputs = generator(raw_img_PIL, points_per_batch=1)
-        # masks = outputs["masks"]
+        raw_img_PIL = Image.open(image_fname).convert("RGB")
+        pixels = selectPixels(np.array(raw_img_PIL))
+        input_points = np.array(pixels)
+
+        inputs = processor(raw_img_PIL, return_tensors="pt").to(device)
+        image_embeddings = SAM_model.get_image_embeddings(inputs["pixel_values"])
+        inputs = processor(raw_img_PIL, input_points=input_points[None,...].tolist(), return_tensors="pt").to(device)
+        # pop the pixel_values as they are not neded
+        inputs.pop("pixel_values", None)
+        inputs.update({"image_embeddings": image_embeddings})
+        with torch.no_grad():
+            outputs = SAM_model(**inputs)
+        masks_all = processor.image_processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu())
+
+        # masks = []
+        # for mask in masks_all:
+        #     _m_ = mask.squeeze().cpu().numpy()
+        #     _mask = np.split(_m_, _m_.shape[0], axis = 0)
+        #     masks.extend(_mask)
+        best_mask_id = np.argmax(outputs['iou_scores'].cpu().numpy())
+        mask = masks_all[0][0,best_mask_id,:,:].squeeze()
+        # pdb.set_trace()
         # scores = outputs["scores"]
-        # show_masks_on_image(raw_img, masks)
-        # metric_depth = np.load(depth_fname) 
-        # pred_depth_upgraded_sam = SAMSegmentation(pred_depth, metric_depth, masks)
-        # # writePCD(pred_depth_upgraded_sam, raw_img, 'pred_depth_upgraded_SAM')
-        # out = writePCD(pred_depth_upgraded_sam, raw_img, str(i))
-        # scaled_PCDs.append(out)
+        show_masks_on_image(raw_img, [mask])
+        metric_depth = np.load(depth_fname) 
+        pred_depth_upgraded_sam = SAMSegmentation(pred_depth, metric_depth, [mask])
+        # writePCD(pred_depth_upgraded_sam, raw_img, 'pred_depth_upgraded_SAM')
+        out = writePCD(pred_depth_upgraded_sam, raw_img, str(i))
+        _ = writePCD(metric_depth, raw_img, 'metric_depth'+str(i))
+
+        scaled_PCDs.append(out)
         # exit()
 
     img_tmp = cv2.imread(image_fnames[0],0)/255.0

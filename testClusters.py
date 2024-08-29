@@ -10,9 +10,9 @@ def plotOneEllipsoid(mean, cov):
     D, rot = np.linalg.eig(cov)
     # pdb.set_trace()
     
-    a = D[0] * 100.0 # Semi-major axis - x
-    b = D[1] * 100.0 # Semi-minor axis - y
-    c = D[2] * 100.0 # Semi-minor axis - z
+    a = D[0] * 0.5 # Semi-major axis - x
+    b = D[1] * 0.5 # Semi-minor axis - y
+    c = D[2] * 0.5 # Semi-minor axis - z
     # pdb.set_trace()
 
     # Create a mesh grid
@@ -37,7 +37,7 @@ def plotOneEllipsoid(mean, cov):
 if __name__ == "__main__":
 
     pcd = o3d.io.read_point_cloud('./src.ply')
-    pcd = pcd.voxel_down_sample(0.005)
+    pcd = pcd.voxel_down_sample(2.5)
     points = np.asarray(pcd.points)
     print(points.shape)
     o3d.visualization.draw_geometries([pcd])
